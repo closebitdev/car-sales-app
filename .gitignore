@@ -1,0 +1,19 @@
+# Node / TS
+node_modules/
+dist/
+build/
+coverage/
+*.log
+
+# Env & local config
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/
+.DS_Store
+
+# Docker
+**/.docker
+*.pid
