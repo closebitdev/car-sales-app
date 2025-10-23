@@ -2,10 +2,13 @@ import express from "express";
 import { AppDataSource } from "../ormconfig";
 import { Car } from "../entities/Car";
 import { authenticateJWT, authorizeRoles } from "../middleware/authMiddleware";
+
 /**import paths for uploads */
 import path from "path";
 import fs from "fs";
-import { uploadImage } from "../middleware/upload";
+
+import { CarImage } from "../entities/CarImage";
+import { uploadImages } from "../middleware/upload";
 
 
 const router = express.Router();
@@ -137,74 +140,197 @@ router.delete(
   }
 );
 
-// Upload/replace car image
+// -------------------------------------------
+// IMAGES: list, upload, update, delete
+// -------------------------------------------
+
+// List images for a car
+router.get("/:id/images", async (req, res) => {
+  const id = Number(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ message: "Invalid car ID" });
+
+  try {
+    const imgs = await AppDataSource.getRepository(CarImage).find({
+      where: { car: { id } },
+      order: { sortOrder: "ASC", id: "ASC" },
+    });
+    res.json(imgs);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: "Error fetching images" });
+  }
+});
+
+// Upload multiple images
 router.post(
-  "/:id/image",
+  "/:id/images",
   authenticateJWT,
   authorizeRoles("owner", "admin", "sales"),
   (req, res) => {
-    uploadImage(req, res, async (err: any) => {
-      if (err) {
-        return res.status(400).json({ message: err.message || "Upload error" });
-      }
+    uploadImages(req, res, async (err: any) => {
+      if (err) return res.status(400).json({ message: err.message || "Upload error" });
 
       const id = Number(req.params.id);
       if (isNaN(id)) return res.status(400).json({ message: "Invalid car ID" });
 
       try {
-        const car = await carRepository.findOneBy({ id });
+        const carRepo = AppDataSource.getRepository(Car);
+        const imgRepo = AppDataSource.getRepository(CarImage);
+
+        const car = await carRepo.findOne({ where: { id }, relations: ["images"] });
         if (!car) return res.status(404).json({ message: "Car not found" });
 
-        // If replacing an existing image, remove old file
-        if (car.imageUrl) {
-          const oldPath = path.join(__dirname, "..", "..", car.imageUrl.replace(/^\//, ""));
-          fs.existsSync(oldPath) && fs.unlinkSync(oldPath);
+        const files = (req as any).files as Express.Multer.File[] | undefined;
+        if (!files?.length) return res.status(400).json({ message: "No images provided" });
+
+        // Determine starting sortOrder
+        const maxSort = car.images?.length ? Math.max(...car.images.map((i) => i.sortOrder)) : -1;
+
+        const newImages: CarImage[] = [];
+        files.forEach((file, idx) => {
+          const img = imgRepo.create({
+            car,
+            url: `/uploads/${path.basename(file.path)}`,
+            isPrimary: false,
+            sortOrder: maxSort + 1 + idx,
+          });
+          newImages.push(img);
+        });
+
+        await imgRepo.save(newImages);
+
+        // If no primary image exists, set the first newly uploaded as primary
+        const hasPrimary = (car.images || []).some((i) => i.isPrimary);
+        if (!hasPrimary && newImages.length) {
+          newImages[0].isPrimary = true;
+          await imgRepo.save(newImages[0]);
+          // sync legacy field
+          car.imageUrl = newImages[0].url;
+          await carRepo.save(car);
         }
 
-        // Multer adds `file` on the request; we only need `.path`.
-        const file = (req as any).file as { path: string } | undefined;
-        if (!file) return res.status(400).json({ message: "No image provided" });
-
-        // Save relative URL
-        car.imageUrl = `/uploads/${path.basename(file.path)}`;
-        await carRepository.save(car);
-
-        res.status(200).json({ message: "Image uploaded", imageUrl: car.imageUrl, car });
+        res.status(201).json({ message: "Images uploaded", images: newImages });
       } catch (e) {
         console.error(e);
-        res.status(500).json({ message: "Error uploading image" });
+        res.status(500).json({ message: "Error uploading images" });
       }
     });
   }
 );
 
-// Delete car image
+// Update image (caption, sortOrder, set primary)
+router.patch(
+  "/:id/images/:imageId",
+  authenticateJWT,
+  authorizeRoles("owner", "admin", "sales"),
+  async (req, res) => {
+    const carId = Number(req.params.id);
+    const imageId = Number(req.params.imageId);
+    if ([carId, imageId].some(isNaN)) return res.status(400).json({ message: "Invalid IDs" });
+
+    const { caption, sortOrder, isPrimary } = req.body as {
+      caption?: string;
+      sortOrder?: number;
+      isPrimary?: boolean;
+    };
+
+    try {
+      const carRepo = AppDataSource.getRepository(Car);
+      const imgRepo = AppDataSource.getRepository(CarImage);
+
+      const car = await carRepo.findOne({ where: { id: carId }, relations: ["images"] });
+      if (!car) return res.status(404).json({ message: "Car not found" });
+
+      const image = await imgRepo.findOne({ where: { id: imageId, car: { id: carId } } });
+      if (!image) return res.status(404).json({ message: "Image not found" });
+
+      if (caption !== undefined) image.caption = caption;
+      if (typeof sortOrder === "number") image.sortOrder = sortOrder;
+
+      if (isPrimary === true) {
+        // clear previous primary
+        const all = await imgRepo.find({ where: { car: { id: carId } } });
+        for (const i of all) {
+          if (i.isPrimary) {
+            i.isPrimary = false;
+            await imgRepo.save(i);
+          }
+        }
+        image.isPrimary = true;
+        // sync legacy car.imageUrl
+        car.imageUrl = image.url;
+        await carRepo.save(car);
+      } else if (isPrimary === false && image.isPrimary) {
+        // prevent leaving car without a primary via this call—ignore false if it's the only primary
+        // (client can set another as primary first)
+      }
+
+      await imgRepo.save(image);
+      res.json({ message: "Image updated", image });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ message: "Error updating image" });
+    }
+  }
+);
+
+// Delete image
 router.delete(
-  "/:id/image",
+  "/:id/images/:imageId",
   authenticateJWT,
   authorizeRoles("owner", "admin"),
   async (req, res) => {
-    const id = Number(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ message: "Invalid car ID" });
+    const carId = Number(req.params.id);
+    const imageId = Number(req.params.imageId);
+    if ([carId, imageId].some(isNaN)) return res.status(400).json({ message: "Invalid IDs" });
 
     try {
-      const car = await carRepository.findOneBy({ id });
+      const carRepo = AppDataSource.getRepository(Car);
+      const imgRepo = AppDataSource.getRepository(CarImage);
+
+      const car = await carRepo.findOne({ where: { id: carId }, relations: ["images"] });
       if (!car) return res.status(404).json({ message: "Car not found" });
-      if (!car.imageUrl) return res.status(400).json({ message: "No image to delete" });
 
-      const filePath = path.join(__dirname, "..", "..", car.imageUrl.replace(/^\//, ""));
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      const image = await imgRepo.findOne({ where: { id: imageId, car: { id: carId } } });
+      if (!image) return res.status(404).json({ message: "Image not found" });
 
-      car.imageUrl = null as any; // or `undefined`; matches your column’s nullable: true
-      await carRepository.save(car);
+      // Remove file from disk
+      const filePath = path.join(__dirname, "..", "..", image.url.replace(/^\//, ""));
+      if (fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch (e) {
+          console.warn("Failed to unlink file:", filePath, e);
+        }
+      }
 
-      res.json({ message: "Image removed", car });
+      const isPrimary = image.isPrimary;
+      await imgRepo.remove(image);
+
+      // If we deleted the primary, set a new one & sync legacy field
+      if (isPrimary) {
+        const remaining = await imgRepo.find({
+          where: { car: { id: carId } },
+          order: { sortOrder: "ASC", id: "ASC" },
+        });
+        if (remaining.length) {
+          remaining[0].isPrimary = true;
+          await imgRepo.save(remaining[0]);
+          car.imageUrl = remaining[0].url;
+        } else {
+          car.imageUrl = null as any;
+        }
+        await carRepo.save(car);
+      }
+
+      res.json({ message: "Image deleted" });
     } catch (e) {
       console.error(e);
       res.status(500).json({ message: "Error deleting image" });
     }
   }
 );
+
 
 
 export default router;
