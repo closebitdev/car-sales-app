@@ -26,10 +26,9 @@ function fileFilter(_req: any, file: any, cb: multer.FileFilterCallback) {
   cb(new Error("Only JPG/PNG/WebP images are allowed"));
 }
 
-export const uploadImage = multer({
-  storage,
-  fileFilter,
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
-  },
-}).single("image");
+// single image upload // 5MB
+export const uploadImage = multer({ storage, fileFilter, limits: { fileSize: 5 * 1024 * 1024, }, }).single("image");
+
+// multi upload: up to 10 images per request
+export const uploadImages = multer({ storage, fileFilter, limits: { fileSize: 5 * 1024 * 1024 } }).array("images", 10);
+

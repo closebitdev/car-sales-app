@@ -17,3 +17,6 @@ coverage/
 # Docker
 **/.docker
 *.pid
+
+# uploads
+uploads/

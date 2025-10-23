@@ -1,4 +1,7 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from "typeorm";
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany } from "typeorm";
+import { CarImage } from "./CarImage";
+
+
 
 @Entity()
 export class Car {
@@ -40,4 +43,8 @@ export class Car {
 
   @UpdateDateColumn()
   updatedAt!: Date;
+
+  @OneToMany(() => CarImage, (img) => img.car, { cascade: true })
+  images!: CarImage[];
+
 }
