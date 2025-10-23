@@ -4,6 +4,16 @@ import { AppDataSource } from "./ormconfig";
 import app from "./app";
 import { User } from "./entities/User";
 
+import path from "path";
+import express from "express";
+// ...existing imports & app setup
+
+// Static serving for uploaded files
+app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
+
+
+
+
 dotenv.config();
 
 const PORT = process.env.PORT || 3000;

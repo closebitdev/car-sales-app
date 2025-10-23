@@ -2,6 +2,11 @@ import express from "express";
 import { AppDataSource } from "../ormconfig";
 import { Car } from "../entities/Car";
 import { authenticateJWT, authorizeRoles } from "../middleware/authMiddleware";
+/**import paths for uploads */
+import path from "path";
+import fs from "fs";
+import { uploadImage } from "../middleware/upload";
+
 
 const router = express.Router();
 const carRepository = AppDataSource.getRepository(Car);
@@ -131,5 +136,75 @@ router.delete(
     }
   }
 );
+
+// Upload/replace car image
+router.post(
+  "/:id/image",
+  authenticateJWT,
+  authorizeRoles("owner", "admin", "sales"),
+  (req, res) => {
+    uploadImage(req, res, async (err: any) => {
+      if (err) {
+        return res.status(400).json({ message: err.message || "Upload error" });
+      }
+
+      const id = Number(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "Invalid car ID" });
+
+      try {
+        const car = await carRepository.findOneBy({ id });
+        if (!car) return res.status(404).json({ message: "Car not found" });
+
+        // If replacing an existing image, remove old file
+        if (car.imageUrl) {
+          const oldPath = path.join(__dirname, "..", "..", car.imageUrl.replace(/^\//, ""));
+          fs.existsSync(oldPath) && fs.unlinkSync(oldPath);
+        }
+
+        // Multer adds `file` on the request; we only need `.path`.
+        const file = (req as any).file as { path: string } | undefined;
+        if (!file) return res.status(400).json({ message: "No image provided" });
+
+        // Save relative URL
+        car.imageUrl = `/uploads/${path.basename(file.path)}`;
+        await carRepository.save(car);
+
+        res.status(200).json({ message: "Image uploaded", imageUrl: car.imageUrl, car });
+      } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: "Error uploading image" });
+      }
+    });
+  }
+);
+
+// Delete car image
+router.delete(
+  "/:id/image",
+  authenticateJWT,
+  authorizeRoles("owner", "admin"),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ message: "Invalid car ID" });
+
+    try {
+      const car = await carRepository.findOneBy({ id });
+      if (!car) return res.status(404).json({ message: "Car not found" });
+      if (!car.imageUrl) return res.status(400).json({ message: "No image to delete" });
+
+      const filePath = path.join(__dirname, "..", "..", car.imageUrl.replace(/^\//, ""));
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+      car.imageUrl = null as any; // or `undefined`; matches your column’s nullable: true
+      await carRepository.save(car);
+
+      res.json({ message: "Image removed", car });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ message: "Error deleting image" });
+    }
+  }
+);
+
 
 export default router;

@@ -8,7 +8,8 @@ import authRoutes from "./routes/authRoutes";
 import favoriteRoutes from "./routes/favoriteRoutes";
 import adminRoutes from "./routes/adminRoutes";
 import messageRoutes from "./routes/messageRoutes";
-
+import path from "path";
+// ...existing imports & app setup
 
 
 dotenv.config();
@@ -36,6 +37,10 @@ app.use("/api/admin", adminRoutes);
 
 //Messages Route
 app.use("/api/messages", messageRoutes);
+
+// Static serving for uploaded files
+app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
+
 
 
 
